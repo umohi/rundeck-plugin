@@ -6,21 +6,29 @@ import hudson.Launcher;
 import hudson.Util;
 import hudson.model.*;
 import hudson.model.Cause.UpstreamCause;
+import hudson.model.Descriptor.FormException;
 import hudson.model.Run.Artifact;
 import hudson.scm.ChangeLogSet.Entry;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.BuildStepMonitor;
 import hudson.tasks.Notifier;
 import hudson.tasks.Publisher;
+import hudson.util.CopyOnWriteList;
 import hudson.util.FormValidation;
 import java.io.IOException;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.util.Properties;
+import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import net.sf.json.JSONObject;
+
+import org.apache.commons.beanutils.Converter;
 import org.apache.commons.lang.StringUtils;
 import org.kohsuke.stapler.DataBoundConstructor;
 import org.kohsuke.stapler.QueryParameter;
+import org.kohsuke.stapler.Stapler;
 import org.kohsuke.stapler.StaplerRequest;
 import org.rundeck.api.*;
 import org.rundeck.api.RundeckApiException.RundeckApiLoginException;
@@ -34,6 +42,7 @@ import org.rundeck.api.domain.RundeckJob;
  * @author Vincent Behar
  */
 public class RundeckNotifier extends Notifier {
+	private static final Logger LOGGER = Logger.getLogger(RundeckNotifier.class.getName());
 
     /** Pattern used for the token expansion of $ARTIFACT_NAME{regex} */
     private static final transient Pattern TOKEN_ARTIFACT_NAME_PATTERN = Pattern.compile("\\$ARTIFACT_NAME\\{(.+)\\}");
@@ -326,6 +335,8 @@ public class RundeckNotifier extends Notifier {
     public static final class RundeckDescriptor extends BuildStepDescriptor<Publisher> {
 
         private RundeckClient rundeckInstance;
+    	private final CopyOnWriteList<RundeckInstallation> installations = new CopyOnWriteList<RundeckInstallation>();
+
 
         public RundeckDescriptor() {
             super();
@@ -334,25 +345,30 @@ public class RundeckNotifier extends Notifier {
 
         @Override
         public boolean configure(StaplerRequest req, JSONObject json) throws FormException {
-            try {
-                RundeckClientBuilder builder = RundeckClient.builder();
-                builder.url(json.getString("url"));
-                if (json.get("authtoken") != null && !"".equals(json.getString("authtoken"))) {
-                    builder.token(json.getString("authtoken"));
-                } else {
-                    builder.login(json.getString("login"), json.getString("password"));
-                }
 
-                if (json.optInt("apiversion") > 0) {
-                    builder.version(json.getInt("apiversion"));
-                }
-                rundeckInstance=builder.build();
-            } catch (IllegalArgumentException e) {
-                rundeckInstance = null;
-            }
+        	installations.replaceBy(req.bindJSONToList(RundeckInstallation.class, json.get("installations")));
+        	
+        	for(RundeckInstallation installation: installations) {
+        		try {
+        			RundeckClientBuilder builder = RundeckClient.builder();
+        			builder.url(json.getString("url"));
+        			if (json.get("authtoken") != null && !"".equals(json.getString("authtoken"))) {
+        				builder.token(json.getString("authtoken"));
+        			} else {
+        				builder.login(json.getString("login"), json.getString("password"));
+        			}
+
+        			if (json.optInt("apiversion") > 0) {
+        				builder.version(json.getInt("apiversion"));
+        			}
+        			rundeckInstance=builder.build();
+        		} catch (IllegalArgumentException e) {
+        			rundeckInstance = null;
+        		}
+        	}
 
             save();
-            return super.configure(req, json);
+            return true; //super.configure(req, json);
         }
 
         @Override
@@ -499,6 +515,72 @@ public class RundeckNotifier extends Notifier {
         }
     }
 
+    
+    public static final class DescriptorImpl extends JobPropertyDescriptor {
+        private final CopyOnWriteList<RundeckInstallation> sites = new CopyOnWriteList<RundeckInstallation>();
+
+        public DescriptorImpl() {
+            super(RundeckNotifier.class);
+            load();
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public boolean isApplicable(Class<? extends Job> jobType) {
+            return AbstractProject.class.isAssignableFrom(jobType);
+        }
+
+        @Override
+        public String getDisplayName() {
+            return Messages.RundeckNotifier.DisplayName();
+        }
+
+        public void setSites(RundeckInstallation site) {
+            sites.add(site);
+        }
+
+        public RundeckInstallation[] getSites() {
+            return sites.toArray(new RundeckInstallation[0]);
+        }
+
+        @Override
+        public JobProperty<?> newInstance(StaplerRequest req, JSONObject formData)
+                throws FormException {
+        	RundeckNotifier jpp = req.bindParameters(RundeckNotifier.class, "jira.");
+            if (jpp.siteName == null) {
+                jpp = null; // not configured
+            }
+            return jpp;
+        }
+
+        @Override
+        public boolean configure(StaplerRequest req, JSONObject formData) {
+            //Fix^H^H^HDirty hack for empty string to URL conversion error
+            //Should check for existing handler etc, but since this is a dirty hack,
+            //we won't
+            Stapler.CONVERT_UTILS.deregister(java.net.URL.class);
+            Stapler.CONVERT_UTILS.register(new Converter() {
+                public Object convert(Class aClass, Object o) {
+                    if (o == null || "".equals(o) || "null".equals(o)) {
+                        return null;
+                    }
+                    try {
+                        return new URL((String) o);
+                    } catch (MalformedURLException e) {
+                        LOGGER.warning(String.format("%s is not a valid URL.", o.toString()));
+                        return null;
+                    }
+                }
+            }, java.net.URL.class);
+            //End hack
+
+            sites.replaceBy(req.bindJSONToList(RundeckInstallation.class, formData.get("sites")));
+            save();
+            return true;
+        }
+    }
+    
+    
     /**
      * {@link BuildBadgeAction} used to display a Rundeck icon + a link to the Rundeck execution page, on the Jenkins
      * build history and build result page.
