@@ -71,7 +71,7 @@ public class RundeckNotifier extends Notifier {
             return true;
         }
 
-        RundeckClient rundeck = getDescriptor().getRundeckInstance();
+        RundeckClient rundeck = getSiteForProject(build.getProject());
 
         if (rundeck == null) {
             listener.getLogger().println("Rundeck configuration is not valid !");
@@ -90,7 +90,30 @@ public class RundeckNotifier extends Notifier {
 
         return true;
     }
+    
+    public RundeckClient getSiteForProject(AbstractProject<?, ?> project) {
+    	RundeckSite site = RundeckSite.get(project);
+        return getRundeckClientBuilderFromSite(site);
+    }
 
+    public RundeckClient getRundeckClientBuilderFromSite(RundeckSite site) {
+    	try {
+            RundeckClientBuilder builder = RundeckClient.builder();
+            builder.url(site.getUrl().toExternalForm());
+            if (site.getToken() != null && !"".equals(site.getToken())) {
+                builder.token(site.getToken());
+            } else {
+                builder.login(site.getLogin(), site.getPassword());
+            }
+
+            if (site.getVersion() != null && site.getVersion() > 0) {
+                builder.version(site.getVersion());
+            }
+            return builder.build();
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
     /**
      * Check if we need to notify Rundeck for this build. If we have a tag, we will look for it in the changelog of the
      * build and in the changelog of all upstream builds.
@@ -268,7 +291,8 @@ public class RundeckNotifier extends Notifier {
     @Override
     public Action getProjectAction(AbstractProject<?, ?> project) {
         try {
-            return new RundeckJobProjectLinkerAction(getDescriptor().getRundeckInstance(), jobId);
+        	//FIXME: verify logic
+            return new RundeckJobProjectLinkerAction(getDescriptor().getRundeckInstance(project.getLastBuild()), jobId);
         } catch (RundeckApiException e) {
             return null;
         } catch (IllegalArgumentException e) {
@@ -334,32 +358,28 @@ public class RundeckNotifier extends Notifier {
 
         @Override
         public boolean configure(StaplerRequest req, JSONObject json) throws FormException {
-            try {
-                RundeckClientBuilder builder = RundeckClient.builder();
-                builder.url(json.getString("url"));
-                if (json.get("authtoken") != null && !"".equals(json.getString("authtoken"))) {
-                    builder.token(json.getString("authtoken"));
-                } else {
-                    builder.login(json.getString("login"), json.getString("password"));
-                }
-
-                if (json.optInt("apiversion") > 0) {
-                    builder.version(json.getInt("apiversion"));
-                }
-                rundeckInstance=builder.build();
-            } catch (IllegalArgumentException e) {
-                rundeckInstance = null;
-            }
-
             save();
             return super.configure(req, json);
         }
 
         @Override
         public Publisher newInstance(StaplerRequest req, JSONObject formData) throws FormException {
+        	RundeckProjectProperty jpp = req.bindParameters(RundeckProjectProperty.class, "rundeck.");
+            if (jpp.siteName == null) {
+            	throw new FormException("Rundeck global config not valid", "jobIdentifier");
+            }
+            
             String jobIdentifier = formData.getString("jobIdentifier");
+            RundeckSite site = jpp.getSite();
+            RundeckClient client = new RundeckNotifier(jobIdentifier,
+                    formData.getString("options"),
+                    formData.getString("nodeFilters"),
+                    formData.getString("tag"),
+                    formData.getBoolean("shouldWaitForRundeckJob"),
+                    formData.getBoolean("shouldFailTheBuild")).getRundeckClientBuilderFromSite(site);
             RundeckJob job = null;
             try {
+            	rundeckInstance = client;
                 job = findJob(jobIdentifier, rundeckInstance);
             } catch (RundeckApiException e) {
                 throw new FormException("Failed to get job with the identifier : " + jobIdentifier, e, "jobIdentifier");
@@ -377,42 +397,7 @@ public class RundeckNotifier extends Notifier {
                                        formData.getBoolean("shouldFailTheBuild"));
         }
 
-        public FormValidation doTestConnection(@QueryParameter("rundeck.url") final String url,
-                @QueryParameter("rundeck.login") final String login,
-                @QueryParameter("rundeck.password") final String password,
-                @QueryParameter(value = "rundeck.authtoken", fixEmpty = true) final String token,
-                @QueryParameter(value = "rundeck.apiversion", fixEmpty = true) final Integer apiversion) {
-
-            RundeckClient rundeck = null;
-            RundeckClientBuilder builder = RundeckClient.builder().url(url);
-            if (null != apiversion && apiversion > 0) {
-                builder.version(apiversion);
-            }else {
-                builder.version(RundeckClient.API_VERSION);
-            }
-            try {
-                if (null != token) {
-                    rundeck = builder.token(token).build();
-                } else {
-                    rundeck = builder.login(login, password).build();
-                }
-            } catch (IllegalArgumentException e) {
-                return FormValidation.error("Rundeck configuration is not valid ! %s", e.getMessage());
-            }
-            try {
-                rundeck.ping();
-            } catch (RundeckApiException e) {
-                return FormValidation.error("We couldn't find a live Rundeck instance at %s", rundeck.getUrl());
-            }
-            try {
-                rundeck.testAuth();
-            } catch (RundeckApiLoginException e) {
-                return FormValidation.error("Your credentials for the user %s are not valid !", rundeck.getLogin());
-            } catch (RundeckApiException.RundeckApiTokenException e) {
-                return FormValidation.error("Your token authentication is not valid!");
-            }
-            return FormValidation.ok("Your Rundeck instance is alive, and your credentials are valid !");
-        }
+        
 
         public FormValidation doCheckJobIdentifier(@QueryParameter("jobIdentifier") final String jobIdentifier) {
             if (rundeckInstance == null) {
@@ -490,7 +475,29 @@ public class RundeckNotifier extends Notifier {
             return "Rundeck";
         }
 
-        public RundeckClient getRundeckInstance() {
+        public RundeckClient getRundeckInstance(AbstractBuild<?, ?> build) {
+        	RundeckSite site = RundeckSite.get(build.getProject());
+            if (site == null) {
+                throw new IllegalStateException("Rundeck site needs to be configured in the project " + build.getFullDisplayName());
+            }
+            
+            try {
+                RundeckClientBuilder builder = RundeckClient.builder();
+                builder.url(site.getUrl().toExternalForm());
+                if (site.getToken() != null && !"".equals(site.getToken())) {
+                    builder.token(site.getToken());
+                } else {
+                    builder.login(site.getLogin(), site.getPassword());
+                }
+
+                if (site.getVersion() != null && site.getVersion() > 0) {
+                    builder.version(site.getVersion());
+                }
+                rundeckInstance=builder.build();
+            } catch (IllegalArgumentException e) {
+                rundeckInstance = null;
+            }
+            
             return rundeckInstance;
         }
 

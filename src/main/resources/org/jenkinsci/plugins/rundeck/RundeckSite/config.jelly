@@ -1,0 +1,29 @@
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form">
+  <f:section title="Rundeck">
+    <f:entry title="Name" help="/plugin/rundeck/help-globalConfig-sitename.html" field="siteName">
+      <f:textbox />
+    </f:entry>
+    <f:entry title="URL" help="/plugin/rundeck/help-globalConfig-url.html" field="url">
+      <f:textbox />
+    </f:entry>
+    <f:entry title="Login" help="/plugin/rundeck/help-globalConfig-login.html" field="login">
+      <f:textbox />
+    </f:entry>
+    <f:entry title="Password" help="/plugin/rundeck/help-globalConfig-password.html" field="password">
+      <f:password />
+    </f:entry>
+    <f:entry title="Auth Token" help="/plugin/rundeck/help-globalConfig-authtoken.html" field="token">
+      <f:textbox />
+    </f:entry>
+    <f:entry title="API Version" help="/plugin/rundeck/help-globalConfig-apiversion.html" field="version">
+      <f:textbox />
+    </f:entry>
+    <f:validateButton title="Test Connection" progress="Testing..." 
+    	method="testConnection" with="siteName,url,login,password,authtoken" />
+    <f:entry title="">
+      <div align="right">
+        <f:repeatableDeleteButton />
+      </div>
+  	</f:entry>
+  </f:section>
+</j:jelly>
